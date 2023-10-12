@@ -32,10 +32,36 @@ class NetworkSearchAnalysis(object):
         # and (key:uniprot values:symbol)
         self.gene_list = pd.read_csv(genes_path, names=['ensmbl'])
         self.gene_list = list(self.gene_list['ensmbl'])
-        self.uniprot2ensmbl, self.uniprot2symbol, self.symbol2uniprot, self.missing = self.ensmbl2uniprot(self.gene_list)
+        # self.uniprot2ensmbl, self.uniprot2symbol, self.symbol2uniprot, self.missing = self.ensmbl2uniprot(self.gene_list)
 
         # Load metabolites into dictionary (key:chebi values:chemical names)
         self.metabolites_path = metabolites_path
+
+    def map_genes2pathways(self, gene_list, scopes):
+        query = self.mg.querymany(gene_list,
+                                  scopes=scopes,
+                                  species=9606,
+                                  fields='uniprot,symbol,pathway',
+                                  returnall=True,
+                                  as_dataframe=True)
+
+        gene2pathways = {}
+        uniprot2ensmbl = {}
+        reactome2pathway_names = {}
+        hits = query['out'].dropna(subset=['pathway.reactome'])
+        for index, row in hits.iterrows():
+            pathways = []
+            for d_ in row['pathway.reactome']:
+                pathways.append(d_['id'])
+                reactome2pathway_names[d_['id']] = d_['name']
+            if isinstance(row['uniprot.Swiss-Prot'], list):
+                for id_ in row['uniprot.Swiss-Prot']:
+                    gene2pathways[id_] = pathways
+                    uniprot2ensmbl[id_] = index
+            else:
+                gene2pathways[row['uniprot.Swiss-Prot']] = pathways
+                uniprot2ensmbl[row['uniprot.Swiss-Prot']] = index
+        return gene2pathways, uniprot2ensmbl, reactome2pathway_names
 
     def ensmbl2uniprot(self, gene_list):
         '''Convert a list of ensmbl ids to uniprot ids.'''
@@ -192,7 +218,7 @@ class NetworkSearchAnalysis(object):
             graph = pathways_graphs[pathway]
             graph_nodes = dict(graph.nodes(data=True))
             graph_degrees=dict(graph.degree())
-            mean_degree = statistics.mean(graph_degrees.values())
+            # mean_degree = statistics.mean(graph_degrees.values())
             #determine the size of the sample to calculate test statistics
             sample_size = len(ids_to_analyze[pathway])
             #find metabolites ids in the pathway network
@@ -202,36 +228,40 @@ class NetworkSearchAnalysis(object):
                     pathway_metabolites.append(node[0])
             #calculate N random test statistics
             random_test_statistics = []
-            for i in range(0,500):
+            for i in range(0, 500):
                 #get gene nodes with distance 3 or less from a metabolite of interest
                 test_statistic = 0
-                for node in random.sample(pathway_metabolites, sample_size):
-                    distances = nx.shortest_path_length(graph, source = node)
-                    valid_distances = {key:val for key, val in distances.items() if val <= 3}
-                    #remove nodes with degree higher tha 3 time the average degree in the pathway network
-                    valid_distances_filtered = valid_distances.copy()
-                    # for key in valid_distances:
-                        # if graph_degrees[key]/mean_degree > 3
-                        #     valid_distances_filtered.pop(key)
-                    #remove nodes that are not genes
-                    valid_distances_uniprot = valid_distances_filtered.copy()
-                    valid_genes = []
-                    for key in valid_distances_filtered:
-                        if ('uniprot' in graph_nodes[key]):
-                            uniprot_ids = graph_nodes[key]['uniprot'].split(';')
-                            gene_of_interest = [id_ in list(self.uniprot2ensmbl.keys()) for id_ in uniprot_ids]
-                            if not any([id_ in list(self.uniprot2ensmbl.keys()) for id_ in uniprot_ids]):
-                                valid_distances_uniprot.pop(key)
+                if len(pathway_metabolites)>=sample_size:
+                    for node in random.sample(pathway_metabolites, sample_size):
+                        distances = nx.shortest_path_length(graph, source = node)
+                        valid_distances = {key:val for key, val in distances.items() if val <= 3}
+                        #remove nodes with degree higher tha 3 time the average degree in the pathway network
+                        valid_distances_filtered = valid_distances.copy()
+                        # for key in valid_distances:
+                            # if graph_degrees[key]/mean_degree > 3
+                            #     valid_distances_filtered.pop(key)
+                        #remove nodes that are not genes
+                        valid_distances_uniprot = valid_distances_filtered.copy()
+                        valid_genes = []
+                        for key in valid_distances_filtered:
+                            if ('uniprot' in graph_nodes[key]):
+                                uniprot_ids = graph_nodes[key]['uniprot'].split(';')
+                                gene_of_interest = [id_ in list(self.uniprot2ensmbl.keys()) for id_ in uniprot_ids]
+                                if not any([id_ in list(self.uniprot2ensmbl.keys()) for id_ in uniprot_ids]):
+                                    valid_distances_uniprot.pop(key)
+                                else:
+                                    valid_genes = valid_genes + list(np.array(uniprot_ids)[gene_of_interest])
                             else:
-                                valid_genes = valid_genes + list(np.array(uniprot_ids)[gene_of_interest])
-                        else:
-                            valid_distances_uniprot.pop(key)
-                    # test_statistic = test_statistic + len(valid_distances_uniprot)
-                    test_statistic = test_statistic + len(valid_genes)
+                                valid_distances_uniprot.pop(key)
+                        # test_statistic = test_statistic + len(valid_distances_uniprot)
+                        test_statistic = test_statistic + len(valid_genes)
                 random_test_statistics.append(test_statistic)
             if len(pd.Series(random_test_statistics).value_counts()) > 5:
                 random_t_stats[pathway] = random_test_statistics
         return random_t_stats
+
+    # def calculate_b_centrality(self, ids_to_analyze, pathways_graphs):
+
 
     def calculate_t_stats(self, ids_to_analyze, pathways_graphs):
         pathways_distances_uniprot = {}
@@ -392,9 +422,10 @@ class NetworkSearchAnalysis(object):
                     significant_pathways_continuum.at[i, 'metabolite'] = keys[1]
                     significant_pathways_continuum.at[i, 'genes_uniprot'] = pathways_distances_uniprot[keys]
                     symbols = []
-                    for gene in pathways_distances_uniprot[keys]:
-                        symbols.append(self.uniprot2symbol[gene])
-                    significant_pathways_continuum.at[i, 'genes_symbol'] = symbols
+                    # WHY THIS STOPPED WORKING????
+                    # for gene in pathways_distances_uniprot[keys]:
+                    #     symbols.append(self.uniprot2symbol[gene])
+                    # significant_pathways_continuum.at[i, 'genes_symbol'] = symbols
                     significant_pathways_continuum.at[i, 'q_value'] = statistics_df.loc[pathway, 'q_value']
                     i=i+1
         return significant_pathways_continuum

@@ -7,7 +7,6 @@ from joblib import Parallel, delayed
 from pathlib import Path
 import subprocess
 import glob
-import pax2graphml as p2g
 import networkx as nx
 import statistics
 import random

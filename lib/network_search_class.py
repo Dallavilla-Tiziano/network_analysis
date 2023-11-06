@@ -317,7 +317,7 @@ class NetworkSearchAnalysis(object):
                         'fisk',
                         'gamma',
                         'genpareto',
-                        'gilbrat',
+                        'gibrat',
                         't',
                         'norm']
         # Estimate distribution parameters from data
